@@ -6,3 +6,166 @@ description: Configuring Ingress Gateways on Kubernetes
 ---
 
 # Ingress Gateways on Kubernetes
+
+-> 1.8.0+: This feature is available in Consul versions 1.8.0 and higher
+
+~> This topic requires familiarity with Ingress Gateways.
+
+This page describes how to enable external access to Connect service mesh services running inside Kubernetes using Consul ingress gateways. See Ingress Gateways for more information on use-cases and how it works.
+
+Adding an ingress gateway is a multistep process, that at a high level, consists of the following steps:
+
+* Setting the helm chart configuration
+* Deploying the helm chart
+* Registering a Service with Consul
+* Deploying your application to Kubernetes
+* Defining an Intention (optional)
+
+## Setting the helm chart configuration
+Helm options
+When deploying the helm chart you must provide helm with a custom values.yaml file that contains your environment configuration. The following yaml snippet is the launching point for a valid configuration that must be supplied when installing using the official consul-helm chart. Information on additional options can be found here. Configuration options for ingress gateways reside under the ingressGateways entry.
+
+```shell-session
+$ cat > config.yaml <<EOF
+connectInject:
+  enabled: true
+ingressGateways:
+  enabled: true
+  gateways:
+    - name: ingress-gateway
+      replicas: 2
+      service:
+       type: LoadBalancer
+EOF
+```
+
+The gateways stanza is where you will define and configure the set of ingress gateways you want deployed to your environment. The only required field for each entry is `name`, though entries may contain any of the fields found in the `defaults` stanza. Values in this section override the values from the defaults stanza for the given ingress gateway with one exception. The annotations from the defaults stanza will be appended to any user-defined annotations defined in the gateways stanza. Please refer to the ingress gateway configuration documentation for a detailed explanation of each option.
+
+-> Note: Make sure any ports that will be used as listeners in the ingress gateway's Consul config entry are included in the `ports` object for each gateway.
+
+
+
+## Deploying the helm chart
+
+Ensure you have the latest consul-helm chart by running the following command:
+
+```shell-session
+ $ helm repo add hashicorp https://helm.releases.hashicorp.com
+```
+
+Assuming you saved your configuration to a file called config.yaml in the local directory, you can apply your configuration with the following command:
+
+```shell-session
+$ helm install -f config.yaml consul hashicorp/consul --wait
+```
+
+## Registering a service with Consul
+
+Now that Kubernetes has been updated, you must add the corresponding configuration to Consul. This requires you to use the consul cli.
+Registering a service with Consul is a multi-step process that consists of:
+
+* Accessing the Consul agent
+* Submitting an Ingress Gateway service definition to Consul
+
+### Accessing the Consul agent
+
+You can access the Consul server directly from your host via `kubectl port-forward`, this is helpful for interacting with your consul-ui locally as well as to validate connectivity of the application.
+
+```shell-session
+$ kubectl port-foward <consul-release>-server-0 8500 &
+```
+
+-> Be sure the latest consul binary is installed locally on your host.
+https://releases.hashicorp.com/consul/1.8.0/
+
+-> If TLS and ACLs are enabled, you must set the following environment variables.
+
+```shell-session
+$ export CONSUL_HTTP_ADDR=https://localhost:8501
+$ export CONSUL_HTTP_TOKEN=$(kubectl get secret <consul-release>--acl-bootstrap-token -o jsonpath={.data.token} | base64 -D)
+$ export CONSUL_HTTP_SSL_VERIFY=false
+```
+
+### Submitting an Ingress Gateway service definition
+
+Now that you have access to the Consul cli you are able to submit an ingress gateway service definition. Here is an example service definition.
+
+```shell-session
+$  cat > ingress-gateway.hcl <<EOF
+Kind = "ingress-gateway"
+Name = "ingress-gateway"
+
+Listeners = [
+ {
+   Port = 8080
+   Protocol = "http"
+   Services = [
+     {
+       Name = "static-server"
+     }
+   ]
+ }
+]
+EOF
+```
+
+Submit the ingress gateway service definition with the Consul cli using this command.
+
+```shell-session
+$ consul config write ingress-gateway.hcl
+```
+
+-> You can confirm service registration by looking at the consul-ui : http://localhost:8500/ui/dc1/services/ingress-gateway/
+
+## Deploying your application to Kubernetes
+Now you will deploy a sample application which echos “hello world”
+
+```shell-session
+$  cat > static-server.yaml <<EOF
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: static-server
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: static-server
+  annotations:
+    'consul.hashicorp.com/connect-inject': 'true'
+spec:
+  containers:
+    # This name will be the service name in Consul.
+    - name: static-server
+      image: hashicorp/http-echo:latest
+      args:
+        - -text="hello world"
+        - -listen=:8080
+      ports:
+        - containerPort: 8080
+          name: http
+    # If ACLs are enabled, the serviceAccountName must match the Consul service name.
+  serviceAccountName: static-server
+EOF
+```
+
+```shell-session
+kubectl apply -f static-server.yaml
+```
+
+-> You can validate the connectivity of the application in the consul-ui
+http://localhost:8500/ui/dc1/services/static-server/instances
+
+-> You can also validate the connectivity of the application using a curl command
+```shell-session
+EXTERNAL_IP=kubectl get services | grep ingress-gateway | awk ‘{print $4}’
+curl -H "Host: static-server.ingress.consul" $EXTERNAL_IP:8080
+```
+
+## Defining an Intention
+
+Finally, you can define an intention to allow the ingress gateway to access the upstream services defined in the config entries.
+For detailed instructions on how to configure zero-trust networking with intentions please refer to this guide.
+
+-> If you are using ACLs, you must create an intention to enable inter-service communication.
+

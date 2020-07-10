@@ -14,13 +14,14 @@ description: Configuring Ingress Gateways on Kubernetes
 This page describes how to enable external access to Connect service mesh services running inside Kubernetes using Consul ingress gateways.
 See [Ingress Gateways](https://www.consul.io/docs/connect/ingress-gateway) for more information on use-cases and how it works.
 
-Adding an ingress gateway is a multistep process, that at a high level, consists of the following steps:
+Adding an ingress gateway is a multi-step process, that at a high level, consists of the following steps:
 
 * Setting the helm chart configuration
 * Deploying the helm chart
-* Registering a Service with Consul
-* Deploying your application to Kubernetes
+* Configuring the gateway
 * Defining an Intention (optional)
+* Deploying your application to Kubernetes
+* Connecting to your application
 
 ## Setting the helm chart configuration
 Helm options
@@ -50,8 +51,6 @@ Please refer to the ingress gateway configuration [documentation](https://www.co
 
 -> Note: Make sure any ports that will be used as listeners in the ingress gateway's Consul config entry are included in the `ports` object for each gateway.
 
-
-
 ## Deploying the helm chart
 
 Ensure you have the latest consul-helm chart by running the following command:
@@ -72,7 +71,7 @@ Now that Kubernetes has been updated, you must add the corresponding configurati
 Registering a service with Consul is a multi-step process that consists of:
 
 * Accessing the Consul agent
-* Submitting an Ingress Gateway service definition to Consul
+* Submitting an Ingress Gateway configuration entry to Consul
 
 ### Accessing the Consul agent
 
@@ -93,9 +92,10 @@ $ export CONSUL_HTTP_TOKEN=$(kubectl get secret <consul-release>--acl-bootstrap-
 $ export CONSUL_HTTP_SSL_VERIFY=false
 ```
 
-### Submitting an Ingress Gateway service definition
+### Submitting an Ingress Gateway configuration entry
 
-Now that you have access to the Consul cli you are able to submit an ingress gateway service definition. Here is an example service definition.
+Now that you have access to the Consul cli you are able to submit an ingress gateway configuration entry.
+Here is an example service definition.
 
 ```shell-session
 $  cat > ingress-gateway.hcl <<EOF
@@ -123,6 +123,13 @@ $ consul config write ingress-gateway.hcl
 ```
 
 -> You can confirm service registration by looking at the consul-ui : http://localhost:8500/ui/dc1/services/ingress-gateway/
+
+## Defining an Intention
+
+If ACLs are enabled you can define an [intention](https://www.consul.io/docs/commands/intention) to allow the ingress gateway to access the upstream services defined in the config entries.
+For detailed instructions on how to configure zero-trust networking with intentions please refer to this [guide](https://learn.hashicorp.com/consul/gs-consul-service-mesh/network-security-with-consul-service-mesh).
+
+-> If you are using ACLs, you must create an intention to enable inter-service communication.
 
 ## Deploying your application to Kubernetes
 Now you will deploy a sample application which echos “hello world”
@@ -160,19 +167,13 @@ EOF
 kubectl apply -f static-server.yaml
 ```
 
--> You can validate the connectivity of the application in the consul-ui
-http://localhost:8500/ui/dc1/services/static-server/instances
+## Connecting to your application
 
--> You can also validate the connectivity of the application using a curl command
+You can validate the connectivity of the application in the consul-ui by navigating to
+`http://localhost:8500/ui/dc1/services/static-server/instances`
+
+You can also validate the connectivity of the application using a curl command
 ```shell-session
 EXTERNAL_IP=kubectl get services | grep ingress-gateway | awk ‘{print $4}’
 curl -H "Host: static-server.ingress.consul" $EXTERNAL_IP:8080
 ```
-
-## Defining an Intention
-
-Finally, you can define an [intention](https://www.consul.io/docs/commands/intention) to allow the ingress gateway to access the upstream services defined in the config entries.
-For detailed instructions on how to configure zero-trust networking with intentions please refer to this [guide](https://learn.hashicorp.com/consul/gs-consul-service-mesh/network-security-with-consul-service-mesh).
-
--> If you are using ACLs, you must create an intention to enable inter-service communication.
-
